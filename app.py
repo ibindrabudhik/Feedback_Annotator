@@ -27,10 +27,10 @@ supabase: Client = init_supabase()
 def load_data():
     # Dataset file paths - update these when you have the actual files
     datasets = {
-        "RAG4O": "generated_feedback_rag_gpt4o.csv.csv",  # RAG WITH GPT4O
-        "RAG5N": "generated_feedback_ragGPT-5-nano.csv.csv",  # RAG WITH GPT5NANO
-        "4O": "generated_feedback_GPT4o.csv",  # GPT4O
-        "5N": "generated_feedback_GPT-5-nano.csv"  # GPT5NANO
+        "RAG4O": "combined_data_generated_feedback_rag_gpt4o.csv",  # RAG WITH GPT4O
+        "RAG5N": "combined_data_generated_feedback_ragGPT-5-nano.csv",  # RAG WITH GPT5NANO
+        "4O": "combined_data_generated_feedback_GPT4o.csv",  # GPT4O
+        "5N": "combined_data_generated_feedback_GPT-5-nano.csv"  # GPT5NANO
     }
     
     loaded_datasets = {}
@@ -112,13 +112,13 @@ def save_annotation(teacher_name, dataset_name, row_data, annotations):
     try:
         # Get the actual row index from the dataframe
         row_index = int(row_data.get("No", st.session_state.current_index))
-        
+        print(row_data.get("Soal_x",""))
         data = {
             "teacher_name": teacher_name,
             "dataset_name": dataset_name,
             "row_index": row_index,
-            "problem": str(row_data.get("Soal", row_data.get("question", ""))),
-            "student_answer": str(row_data.get("Jawaban_Salah", row_data.get("student_error", ""))),
+            "problem": str(row_data.get("Soal_x", row_data.get("Soal_y", row_data.get("Soal", "")))),
+            "student_answer": str(row_data.get("Jawaban_Salah", row_data.get("Student_Answer", ""))),
             "correct_answer": str(row_data.get("Jawaban", row_data.get("correct_answer", ""))),
             "generated_feedback": str(row_data.get("Generated_Feedback", "")),
             "relevancy": annotations["relevancy"],
@@ -284,6 +284,8 @@ def annotation_interface():
     
     st.title(f"Problem Set #{current_idx + 1} of {len(df)}")
     
+    st.markdown("---")
+    
     # Create two columns for layout
     col1, col2 = st.columns([1, 1])
     
@@ -301,7 +303,7 @@ def annotation_interface():
         """, unsafe_allow_html=True)
         
         # Problem Statement
-        problem = row.get("Soal", row.get("question", ""))
+        problem = row.get("Soal_x", row.get("Soal_y", row.get("Soal", "")))
         st.markdown(f"""
         <div style="background-color: #fff3cd; padding: 15px; border-radius: 10px; border-left: 5px solid #ffc107; color: black;">
             <strong>📝 Problem:</strong><br>{problem}
@@ -343,6 +345,27 @@ def annotation_interface():
         st.markdown("</div>", unsafe_allow_html=True)
     
     # Annotation Form
+    st.markdown("---")
+    # Feedback Type Information Section
+    with st.expander("📚 Informasi Jenis-jenis Feedback (Klik untuk melihat)", expanded=False):
+        st.markdown("""
+        #### Definisi Jenis-jenis Feedback:
+        
+        **1. Response-contingent**  
+        Komentar terperinci yang meng-highlight / menyoroti respons khusus dari siswa. Bisa jadi menjelaskan mengapa jawaban yang benar adalah benar dan yang salah adalah salah. Tidak ada analisis kesalahan formal yang digunakan di sini.
+        
+        **2. Topic-contingent**  
+        Feedback terperinci yang memberikan siswa detail tentang topik yang sedang mereka pelajari. Ini bisa berarti mengajarkan kembali materi.
+        
+        **3. Correct response**  
+        Memberi tahu siswa jawaban yang benar untuk masalah yang diselesaikan tanpa informasi tambahan.
+        
+        **4. Verification**  
+        Memberi tahu siswa tentang kebenaran respons mereka, seperti benar/salah atau persentase keseluruhan yang benar.
+        
+        **5. Try-again**  
+        Memberi tahu siswa jika mereka salah menjawab dan memungkinkan siswa satu atau lebih kesempatan untuk menjawab pertanyaan.
+        """)
     st.markdown("---")
     st.markdown("### 📊 Annotation Form")
     st.markdown("Please rate the tutor's feedback on the following criteria:")
