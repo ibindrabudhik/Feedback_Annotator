@@ -27,10 +27,10 @@ supabase: Client = init_supabase()
 def load_data():
     # Dataset file paths - update these when you have the actual files
     datasets = {
-        "RAG4O": "data_rag4o.csv",  # Dummy path
-        "RAG5N": "data_rag5n.csv",  # Dummy path
-        "4O": "50_dataset_soal_indo_with_feedback_parsed.csv",  # Existing file
-        "5N": "50_dataset_soal_indo_with_feedback_parsed_gpt_5nano.csv"  # Existing file
+        "RAG4O": "generated_feedback_rag_gpt4o.csv.csv",  # RAG WITH GPT4O
+        "RAG5N": "generated_feedback_ragGPT-5-nano.csv.csv",  # RAG WITH GPT5NANO
+        "4O": "generated_feedback_GPT4o.csv",  # GPT4O
+        "5N": "generated_feedback_GPT-5-nano.csv"  # GPT5NANO
     }
     
     loaded_datasets = {}
