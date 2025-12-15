@@ -16,14 +16,18 @@ CREATE TABLE IF NOT EXISTS annotations (
     demotivation INTEGER CHECK (demotivation >= 1 AND demotivation <= 3),
     guidance INTEGER CHECK (guidance >= 1 AND guidance <= 3),
     tone_style INTEGER CHECK (tone_style >= 1 AND tone_style <= 4),
+    teacher_comments TEXT,
     timestamp TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- Ensure each teacher can only annotate each question once per dataset
+    UNIQUE(teacher_name, dataset_name, row_index)
 );
 
 -- Create index for faster queries
 CREATE INDEX IF NOT EXISTS idx_teacher_name ON annotations(teacher_name);
 CREATE INDEX IF NOT EXISTS idx_dataset_name ON annotations(dataset_name);
 CREATE INDEX IF NOT EXISTS idx_timestamp ON annotations(timestamp);
+CREATE INDEX IF NOT EXISTS idx_teacher_dataset ON annotations(teacher_name, dataset_name);
 
 -- Enable Row Level Security (RLS)
 ALTER TABLE annotations ENABLE ROW LEVEL SECURITY;
