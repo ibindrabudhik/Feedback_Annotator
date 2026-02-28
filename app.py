@@ -83,16 +83,32 @@ def chat_bubble(message, sender="user"):
     sender = 'ai'    -> tutor (left bubble, blue)
     """
     if sender == "ai":
+        # Use a styled container for tutor messages with LaTeX support
         st.markdown(
-            f"""
-            <div style="background-color: #e6f2ff; color: black; padding:15px; border-radius: 15px; 
-                        max-width: 75%; margin: 10px 10px 10px 0; display: inline-block;">
-                <strong>🤖 Tutor:</strong><br>{message}
+            """
+            <style>
+            .tutor-bubble {
+                background-color: #e6f2ff;
+                color: black;
+                padding: 15px;
+                border-radius: 15px;
+                max-width: 75%;
+                margin: 10px 0;
+                display: inline-block;
+            }
+            .tutor-bubble p {
+                margin: 0;
+                color: black;
+            }
+            </style>
+            <div class="tutor-bubble">
+                <strong>🤖 Tutor:</strong>
             </div>
-            <br style="clear: both;">
             """,
             unsafe_allow_html=True
         )
+        # Render the message with LaTeX support in a styled container
+        st.markdown(f'{message}')  # LaTeX will be parsed here
     else:
         st.markdown(
             f"""
@@ -148,14 +164,17 @@ def teacher_login():
     """Teacher name entry screen"""
     st.title("📝 Feedback Annotation System")
     st.markdown("### Welcome, Teacher!")
-    st.markdown("Please enter your name to begin annotating student feedback.")
+    st.markdown("Silahkan masukkan nama Anda dan pilih dataset yang ingin Anda anotasi. Setelah itu, Anda akan diarahkan ke halaman anotasi di mana Anda dapat memberikan penilaian pada feedback yang diberikan kepada siswa.")
+    #Button to stop the app
+    if st.button("Stop Anotasi"):
+        st.stop()
     
     with st.form("teacher_login_form"):
-        teacher_name = st.text_input("Your Name:", placeholder="e.g., Dr. Smith")
-        dataset_choice = st.radio("Select Dataset to Annotate:", 
+        teacher_name = st.text_input("Nama:", placeholder="e.g., Dr. Smith")
+        dataset_choice = st.radio("Pilih Dataset:", 
                                   ["RAG4O", "RAG5N", "4O", "5N"],
                                   help="RAG4O: RAG + GPT-4o | RAG5N: RAG + GPT-o1 | 4O: GPT-4o | 5N: GPT-o1")
-        submit = st.form_submit_button("Start Annotation")
+        submit = st.form_submit_button("Mulai Anotasi")
         
         if submit and teacher_name:
             st.session_state.teacher_name = teacher_name.strip()
@@ -184,7 +203,7 @@ def teacher_login():
             
             st.rerun()
         elif submit:
-            st.error("Please enter your name.")
+            st.error("Silahkan masukkan nama anda.")
 
 def annotation_interface():
     """Main annotation interface"""
@@ -203,11 +222,11 @@ def annotation_interface():
         st.markdown(f"### 👨‍🏫 Teacher: {st.session_state.teacher_name}")
         
         st.markdown("---")
-        st.markdown("### 📊 Switch Dataset")
+        st.markdown("### 📊 Ganti Dataset")
         
         # Dataset selector
         new_dataset = st.selectbox(
-            "Select Dataset:",
+            "Pilih Dataset:",
             ["RAG4O", "RAG5N", "4O", "5N"],
             index=["RAG4O", "RAG5N", "4O", "5N"].index(st.session_state.selected_dataset),
             help="RAG4O: RAG + GPT-4o | RAG5N: RAG + GPT-o1 | 4O: GPT-4o | 5N: GPT-o1"
@@ -237,12 +256,12 @@ def annotation_interface():
             st.rerun()
         
         st.markdown("---")
-        st.markdown(f"**Current Dataset:** {dataset_name}")
+        st.markdown(f"**Dataset saat ini:** {dataset_name}")
         total_annotated = len(st.session_state.annotations_submitted)
         total_questions = len(df)
         remaining = len(st.session_state.unannotated_rows)
         st.markdown(f"**Progress:** {total_annotated}/{total_questions} annotated")
-        st.markdown(f"**Remaining:** {remaining} questions")
+        st.markdown(f"**Tersisa:** {remaining} pertanyaan dan feedback")
         st.progress(total_annotated / total_questions if total_questions > 0 else 0)
         
         st.markdown("---")
@@ -255,7 +274,7 @@ def annotation_interface():
     
     # Check if all done
     if len(st.session_state.unannotated_rows) == 0:
-        st.success("🎉 You have completed all annotations for this dataset!")
+        st.success("🎉 Anda sudah menyelesaikan semua anotasi!")
         st.balloons()
         st.markdown(f"### Summary")
         st.markdown(f"- **Total Questions:** {len(df)}")
@@ -285,6 +304,29 @@ def annotation_interface():
     st.title(f"Problem Set #{current_idx + 1} of {len(df)}")
     
     st.markdown("---")
+    st.info(f"Anda diminta untuk melakukan anotasi, lihat informasi berikut terkait jenis feedback yang diberikan kepada siswa. Kemudian, berikan penilaian Anda berdasarkan kriteria yang tersedia di bawah ini.")
+    # Feedback Type Information Section
+    with st.expander("📚 Informasi Jenis-jenis Feedback (Klik untuk melihat)", expanded=False):
+        st.markdown("""
+        #### Definisi Jenis-jenis Feedback:
+        
+        **1. Response-contingent**  
+        Komentar terperinci yang meng-highlight / menyoroti respons khusus dari siswa. Bisa jadi menjelaskan mengapa jawaban yang benar adalah benar dan yang salah adalah salah. Tidak ada analisis kesalahan formal yang digunakan di sini.
+        
+        **2. Topic-contingent**  
+        Feedback terperinci yang memberikan siswa detail tentang topik yang sedang mereka pelajari. Ini bisa berarti mengajarkan kembali materi.
+        
+        **3. Correct response**  
+        Memberi tahu siswa jawaban yang benar untuk masalah yang diselesaikan tanpa informasi tambahan.
+        
+        **4. Verification**  
+        Memberi tahu siswa tentang kebenaran respons mereka, seperti benar/salah atau persentase keseluruhan yang benar.
+        
+        **5. Try-again**  
+        Memberi tahu siswa jika mereka salah menjawab dan memungkinkan siswa satu atau lebih kesempatan untuk menjawab pertanyaan.
+        """)
+    st.markdown("---")
+    
     
     # Create two columns for layout
     col1, col2 = st.columns([1, 1])
@@ -322,7 +364,7 @@ def annotation_interface():
     
     with col2:
         # Chat-style conversation
-        st.markdown("### 💬 Student-Tutor Conversation")
+        st.markdown("### 💬 Percakapan Student-Tutor")
         
         # Parse feedback
         feedback_text = ""
@@ -338,95 +380,72 @@ def annotation_interface():
         student_answer = row.get("Jawaban_Salah", row.get("student_error", ""))
         
         # Display chat
-        st.markdown("<div style='background-color: #f8f9fa; padding: 20px; border-radius: 10px;'>", 
-                   unsafe_allow_html=True)
         chat_bubble(student_answer, sender="user")
         chat_bubble(feedback_text, sender="ai")
-        st.markdown("</div>", unsafe_allow_html=True)
     
     # Annotation Form
     st.markdown("---")
-    # Feedback Type Information Section
-    with st.expander("📚 Informasi Jenis-jenis Feedback (Klik untuk melihat)", expanded=False):
-        st.markdown("""
-        #### Definisi Jenis-jenis Feedback:
-        
-        **1. Response-contingent**  
-        Komentar terperinci yang meng-highlight / menyoroti respons khusus dari siswa. Bisa jadi menjelaskan mengapa jawaban yang benar adalah benar dan yang salah adalah salah. Tidak ada analisis kesalahan formal yang digunakan di sini.
-        
-        **2. Topic-contingent**  
-        Feedback terperinci yang memberikan siswa detail tentang topik yang sedang mereka pelajari. Ini bisa berarti mengajarkan kembali materi.
-        
-        **3. Correct response**  
-        Memberi tahu siswa jawaban yang benar untuk masalah yang diselesaikan tanpa informasi tambahan.
-        
-        **4. Verification**  
-        Memberi tahu siswa tentang kebenaran respons mereka, seperti benar/salah atau persentase keseluruhan yang benar.
-        
-        **5. Try-again**  
-        Memberi tahu siswa jika mereka salah menjawab dan memungkinkan siswa satu atau lebih kesempatan untuk menjawab pertanyaan.
-        """)
-    st.markdown("---")
+    
     st.markdown("### 📊 Annotation Form")
-    st.markdown("Please rate the tutor's feedback on the following criteria:")
+    st.markdown("Silahkan beri penilaian pada feedback yang diberikan berdasarkan kriteria berikut. Anda juga dapat menambahkan komentar tambahan di bagian bawah jika diperlukan.")
     
     with st.form("annotation_form"):
         col_a, col_b, col_c = st.columns(3)
         
         with col_a:
             relevancy = st.radio(
-                "1. Relevancy with Formative Feedback",
+                "1. Relevansi dengan Feedback Formative",
                 options=[1, 2, 3, 4],
-                format_func=lambda x: f"{x} - {'Very Low' if x==1 else 'Low' if x==2 else 'High' if x==3 else 'Very High'}",
-                help="How relevant is the feedback to formative assessment principles?"
+                format_func=lambda x: f"{x} - {'Sangat Rendah' if x==1 else 'Rendah' if x==2 else 'Tinggi' if x==3 else 'Sangat Tinggi'}",
+                help="Seberapa relevan feedback ini dengan prinsip penilaian formatif?"
             )
             
             accuracy = st.radio(
-                "2. Accuracy",
+                "2. Akurasinya",
                 options=[0, 1],
-                format_func=lambda x: "Incorrect" if x == 0 else "Correct",
-                help="Is the feedback mathematically/factually accurate?"
+                format_func=lambda x: "Salah" if x == 0 else "Benar",
+                help="Apakah feedback ini akurat secara matematis/fakta?"
             )
         
         with col_b:
             motivation = st.radio(
                 "3. Motivation",
                 options=[1, 2, 3],
-                format_func=lambda x: f"{x} - {'Low' if x==1 else 'Medium' if x==2 else 'High'}",
-                help="How motivating is the feedback for the student?"
+                format_func=lambda x: f"{x} - {'Rendah' if x==1 else 'Sedang' if x==2 else 'Tinggi'}",
+                help="Seberapa memotivasi feedback ini bagi siswa?"
             )
             
             demotivation = st.radio(
                 "4. Demotivation",
                 options=[1, 2, 3],
-                format_func=lambda x: f"{x} - {'Low' if x==1 else 'Medium' if x==2 else 'High'}",
-                help="How demotivating is the feedback? (Lower is better)"
+                format_func=lambda x: f"{x} - {'Rendah' if x==1 else 'Sedang' if x==2 else 'Tinggi'}",
+                help="Seberapa demotivasi feedback ini bagi siswa? (Semakin rendah semakin baik)"
             )
         
         with col_c:
             guidance = st.radio(
                 "5. Guidance",
                 options=[1, 2, 3],
-                format_func=lambda x: f"{x} - {'Low' if x==1 else 'Medium' if x==2 else 'High'}",
-                help="How well does the feedback guide the student?"
+                format_func=lambda x: f"{x} - {'Rendah' if x==1 else 'Sedang' if x==2 else 'Tinggi'}",
+                help="Seberapa baik feedback ini membimbing siswa?"
             )
             
             tone_style = st.radio(
                 "6. Tone and Style",
                 options=[1, 2, 3, 4],
-                format_func=lambda x: f"{x} - {'Poor' if x==1 else 'Fair' if x==2 else 'Good' if x==3 else 'Excellent'}",
-                help="How appropriate is the tone and style of the feedback?"
+                format_func=lambda x: f"{x} - {'Buruk' if x==1 else 'Cukup' if x==2 else 'Baik' if x==3 else 'Sangat Baik'}",
+                help="Seberapa baik tone dan gaya dari feedback ini?"
             )
         
         st.markdown("<br>", unsafe_allow_html=True)
         
         # Optional comments section
-        st.markdown("### 💭 Additional Comments (Optional)")
+        st.markdown("### 💭 Komentar (Opsional)")
         teacher_comments = st.text_area(
-            "Your feedback or notes about this annotation:",
-            placeholder="E.g., The feedback could be more specific about the error, or the tone seems too harsh...",
+            "Komentar Anda tentang anotasi ini:",
+            placeholder="Mis. feedback bisa lebih spesifik tentang kesalahan, atau tone terlalu tajam...",
             height=100,
-            help="Optional: Add any additional observations, suggestions, or notes about this feedback."
+            help="Optional: Berikan tambahan observasi, saran, atau catatan tentang anotasi ini."
         )
         
         st.markdown("<br>", unsafe_allow_html=True)
@@ -453,7 +472,7 @@ def annotation_interface():
                 # Remove this row from unannotated list
                 if row_number in st.session_state.unannotated_rows:
                     st.session_state.unannotated_rows.remove(row_number)
-                st.success("✅ Annotation saved successfully!")
+                st.success("✅ Anotasi berhasil disimpan!")
                 st.rerun()
 
 # Main app logic
