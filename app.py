@@ -301,7 +301,7 @@ def annotation_interface():
         row = df.iloc[current_row_number]
         current_idx = current_row_number
     
-    st.title(f"Problem Set #{current_idx + 1} of {len(df)}")
+    st.title(f"Problem Set #{current_idx - 1} of {len(df)}")
     
     st.markdown("---")
     st.info(f"Anda diminta untuk melakukan anotasi, lihat informasi berikut terkait jenis feedback yang diberikan kepada siswa. Kemudian, berikan penilaian Anda berdasarkan kriteria yang tersedia di bawah ini.")
