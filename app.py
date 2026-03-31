@@ -197,6 +197,25 @@ def get_annotated_rows(teacher_name, dataset_name):
         st.warning(f"Could not fetch previous annotations: {str(e)}")
         return set()
 
+
+def get_existing_annotation(teacher_name, dataset_name, row_index):
+    """Fetch one saved annotation for pre-filling the form."""
+    try:
+        response = (
+            supabase.table("annotations")
+            .select("relevancy,accuracy,motivation,demotivation,guidance,tone_style,teacher_comments")
+            .eq("teacher_name", teacher_name)
+            .eq("dataset_name", dataset_name)
+            .eq("row_index", int(row_index))
+            .limit(1)
+            .execute()
+        )
+        if response.data:
+            return response.data[0]
+        return None
+    except Exception:
+        return None
+
 # Initialize session state
 if 'teacher_name' not in st.session_state:
     st.session_state.teacher_name = None
@@ -208,6 +227,12 @@ if 'annotations_submitted' not in st.session_state:
     st.session_state.annotations_submitted = set()
 if 'unannotated_rows' not in st.session_state:
     st.session_state.unannotated_rows = []
+if 'navigation_history' not in st.session_state:
+    st.session_state.navigation_history = []
+if 'form_reset_counter' not in st.session_state:
+    st.session_state.form_reset_counter = 0
+if 'annotation_prefill' not in st.session_state:
+    st.session_state.annotation_prefill = {}
 
 def chat_bubble(message, sender="user"):
     """
@@ -600,18 +625,17 @@ def save_annotation(teacher_name, dataset_name, row_data, annotations):
             "timestamp": datetime.now().isoformat()
         }
         
-        response = supabase.table("annotations").insert(data).execute()
+        # Use upsert so teachers can re-annotate previously submitted rows.
+        response = (
+            supabase.table("annotations")
+            .upsert(data, on_conflict="teacher_name,dataset_name,row_index")
+            .execute()
+        )
         return True
     except Exception as e:
         error_msg = str(e)
-        # Check if it's a duplicate key error
-        if "duplicate key" in error_msg.lower() or "23505" in error_msg:
-            st.warning("⚠️ This question was already annotated. Skipping to next question.")
-            # Treat as success so we can move to next question
-            return True
-        else:
-            st.error(f"Error saving to database: {error_msg}")
-            return False
+        st.error(f"Error saving to database: {error_msg}")
+        return False
 
 def teacher_login():
     """Teacher name entry screen"""
@@ -633,6 +657,9 @@ def teacher_login():
             st.session_state.teacher_name = teacher_name.strip()
             st.session_state.selected_dataset = dataset_choice
             st.session_state.current_index = 0
+            st.session_state.navigation_history = []
+            st.session_state.form_reset_counter = 0
+            st.session_state.annotation_prefill = {}
             
             # Fetch already-annotated questions for this teacher and dataset
             annotated = get_annotated_rows(teacher_name.strip(), dataset_choice)
@@ -684,6 +711,9 @@ def annotation_interface():
         # Check if dataset changed
         if new_dataset != st.session_state.selected_dataset:
             st.session_state.selected_dataset = new_dataset
+            st.session_state.navigation_history = []
+            st.session_state.form_reset_counter = 0
+            st.session_state.annotation_prefill = {}
             
             # Fetch annotations for new dataset
             annotated = get_annotated_rows(st.session_state.teacher_name, new_dataset)
@@ -731,6 +761,9 @@ def annotation_interface():
             st.session_state.current_index = 0
             st.session_state.annotations_submitted = set()
             st.session_state.unannotated_rows = []
+            st.session_state.navigation_history = []
+            st.session_state.form_reset_counter = 0
+            st.session_state.annotation_prefill = {}
             st.rerun()
     
     # Check if all done
@@ -745,6 +778,9 @@ def annotation_interface():
             st.session_state.current_index = 0
             st.session_state.annotations_submitted = set()
             st.session_state.unannotated_rows = []
+            st.session_state.navigation_history = []
+            st.session_state.form_reset_counter = 0
+            st.session_state.annotation_prefill = {}
             st.rerun()
         return
     
@@ -853,6 +889,17 @@ def annotation_interface():
         # Display chat
         chat_bubble(student_answer, sender="user")
         chat_bubble(feedback_text, sender="ai")
+
+    nav_col1, nav_col2 = st.columns([1, 3])
+    with nav_col1:
+        back_disabled = len(st.session_state.navigation_history) == 0
+        if st.button("⬅️ Back", use_container_width=True, disabled=back_disabled):
+            previous_row = normalize_row_id(st.session_state.navigation_history.pop())
+            if previous_row:
+                if previous_row in st.session_state.unannotated_rows:
+                    st.session_state.unannotated_rows.remove(previous_row)
+                st.session_state.unannotated_rows.insert(0, previous_row)
+            st.rerun()
     
     # Annotation Form
     st.markdown("---")
@@ -860,6 +907,27 @@ def annotation_interface():
     st.markdown("### 📊 Annotation Form")
     st.markdown("Silahkan beri penilaian pada feedback yang diberikan berdasarkan kriteria berikut. Anda juga dapat menambahkan komentar tambahan di bagian bawah jika diperlukan.")
     
+    form_suffix = st.session_state.form_reset_counter
+    prefill_key = f"{dataset_name}::{current_row_number}"
+    prefill = st.session_state.annotation_prefill.get(prefill_key)
+    if prefill is None:
+        loaded_prefill = get_existing_annotation(
+            st.session_state.teacher_name,
+            dataset_name,
+            current_row_number,
+        )
+        if loaded_prefill is None:
+            loaded_prefill = {}
+        st.session_state.annotation_prefill[prefill_key] = loaded_prefill
+        prefill = loaded_prefill
+
+    def _idx(options, value, fallback=0):
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return fallback
+        return options.index(normalized) if normalized in options else fallback
+
     with st.form("annotation_form"):
         col_a, col_b, col_c = st.columns(3)
         
@@ -867,6 +935,8 @@ def annotation_interface():
             relevancy = st.radio(
                 "1. Relevansi dengan Feedback Formative",
                 options=[1, 2, 3, 4],
+                index=_idx([1, 2, 3, 4], prefill.get("relevancy"), fallback=0),
+                key=f"relevancy_{dataset_name}_{current_row_number}_{form_suffix}",
                 format_func=lambda x: f"{x} - {'Sangat Rendah' if x==1 else 'Rendah' if x==2 else 'Tinggi' if x==3 else 'Sangat Tinggi'}",
                 help="Seberapa relevan feedback ini dengan prinsip penilaian formatif?"
             )
@@ -874,6 +944,8 @@ def annotation_interface():
             accuracy = st.radio(
                 "2. Akurasinya",
                 options=[0, 1],
+                index=_idx([0, 1], prefill.get("accuracy"), fallback=0),
+                key=f"accuracy_{dataset_name}_{current_row_number}_{form_suffix}",
                 format_func=lambda x: "Salah" if x == 0 else "Benar",
                 help="Apakah feedback ini akurat secara matematis/fakta?"
             )
@@ -882,6 +954,8 @@ def annotation_interface():
             motivation = st.radio(
                 "3. Motivation",
                 options=[1, 2, 3],
+                index=_idx([1, 2, 3], prefill.get("motivation"), fallback=0),
+                key=f"motivation_{dataset_name}_{current_row_number}_{form_suffix}",
                 format_func=lambda x: f"{x} - {'Rendah' if x==1 else 'Sedang' if x==2 else 'Tinggi'}",
                 help="Seberapa memotivasi feedback ini bagi siswa?"
             )
@@ -889,6 +963,8 @@ def annotation_interface():
             demotivation = st.radio(
                 "4. Demotivation",
                 options=[1, 2, 3],
+                index=_idx([1, 2, 3], prefill.get("demotivation"), fallback=0),
+                key=f"demotivation_{dataset_name}_{current_row_number}_{form_suffix}",
                 format_func=lambda x: f"{x} - {'Rendah' if x==1 else 'Sedang' if x==2 else 'Tinggi'}",
                 help="Seberapa demotivasi feedback ini bagi siswa? (Semakin rendah semakin baik)"
             )
@@ -897,6 +973,8 @@ def annotation_interface():
             guidance = st.radio(
                 "5. Guidance",
                 options=[1, 2, 3],
+                index=_idx([1, 2, 3], prefill.get("guidance"), fallback=0),
+                key=f"guidance_{dataset_name}_{current_row_number}_{form_suffix}",
                 format_func=lambda x: f"{x} - {'Rendah' if x==1 else 'Sedang' if x==2 else 'Tinggi'}",
                 help="Seberapa baik feedback ini membimbing siswa?"
             )
@@ -904,6 +982,8 @@ def annotation_interface():
             tone_style = st.radio(
                 "6. Tone and Style",
                 options=[1, 2, 3, 4],
+                index=_idx([1, 2, 3, 4], prefill.get("tone_style"), fallback=0),
+                key=f"tone_style_{dataset_name}_{current_row_number}_{form_suffix}",
                 format_func=lambda x: f"{x} - {'Buruk' if x==1 else 'Cukup' if x==2 else 'Baik' if x==3 else 'Sangat Baik'}",
                 help="Seberapa baik tone dan gaya dari feedback ini?"
             )
@@ -914,6 +994,8 @@ def annotation_interface():
         st.markdown("### 💭 Komentar (Opsional)")
         teacher_comments = st.text_area(
             "Komentar Anda tentang anotasi ini:",
+            value=prefill.get("teacher_comments") or "",
+            key=f"teacher_comments_{dataset_name}_{current_row_number}_{form_suffix}",
             placeholder="Mis. feedback bisa lebih spesifik tentang kesalahan, atau tone terlalu tajam...",
             height=100,
             help="Optional: Berikan tambahan observasi, saran, atau catatan tentang anotasi ini."
@@ -939,10 +1021,25 @@ def annotation_interface():
             # Save to database
             if save_annotation(st.session_state.teacher_name, dataset_name, row, annotations):
                 row_number = normalize_row_id(row.get('No', current_idx))
+                st.session_state.annotation_prefill[f"{dataset_name}::{row_number}"] = {
+                    "relevancy": relevancy,
+                    "accuracy": accuracy,
+                    "motivation": motivation,
+                    "demotivation": demotivation,
+                    "guidance": guidance,
+                    "tone_style": tone_style,
+                    "teacher_comments": teacher_comments.strip() if teacher_comments else None,
+                }
+                if row_number and (
+                    not st.session_state.navigation_history
+                    or st.session_state.navigation_history[-1] != row_number
+                ):
+                    st.session_state.navigation_history.append(row_number)
                 st.session_state.annotations_submitted.add(row_number)
                 # Remove this row from unannotated list
                 if row_number in st.session_state.unannotated_rows:
                     st.session_state.unannotated_rows.remove(row_number)
+                st.session_state.form_reset_counter += 1
                 st.success("✅ Anotasi berhasil disimpan!")
                 st.rerun()
 
