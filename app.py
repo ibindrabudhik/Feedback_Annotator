@@ -33,11 +33,20 @@ DATASET_HELP = (
 )
 
 
+def normalize_row_id(value):
+    """Normalize row identifiers for consistent set/list operations."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return None
+    text = str(value).strip()
+    return text if text else None
+
+
 def get_all_row_numbers(df):
     """Return row identifiers used for progress/annotation tracking."""
     if "No" in df.columns:
-        return set(df["No"].values)
-    return set(range(len(df)))
+        ids = {normalize_row_id(v) for v in df["No"].values}
+        return {v for v in ids if v is not None}
+    return {str(i) for i in range(len(df))}
 
 @st.cache_data
 def load_data():
@@ -182,8 +191,8 @@ def get_annotated_rows(teacher_name, dataset_name):
     """Fetch list of row indices already annotated by this teacher for this dataset"""
     try:
         response = supabase.table("annotations").select("row_index").eq("teacher_name", teacher_name).eq("dataset_name", dataset_name).execute()
-        annotated_indices = [row['row_index'] for row in response.data]
-        return set(annotated_indices)
+        annotated_indices = {normalize_row_id(row.get('row_index')) for row in response.data}
+        return {v for v in annotated_indices if v is not None}
     except Exception as e:
         st.warning(f"Could not fetch previous annotations: {str(e)}")
         return set()
@@ -714,7 +723,7 @@ def annotation_interface():
             st.markdown("### 🧾 Distribusi Feedback")
             if dataset_name == "Student Raw":
                 st.caption("Balanced sample: maksimum 10 data per tipe feedback.")
-            st.dataframe(counts_df, width="stretch", hide_index=True)
+            st.dataframe(counts_df, use_container_width=True, hide_index=True)
         
         st.markdown("---")
         if st.button("🚪 Logout"):
@@ -743,14 +752,14 @@ def annotation_interface():
     if len(st.session_state.unannotated_rows) == 0:
         return
     
-    current_row_number = st.session_state.unannotated_rows[0]  # Get the first unannotated row number
+    current_row_number = normalize_row_id(st.session_state.unannotated_rows[0])  # Get the first unannotated row number
     
     # Find the actual dataframe index for this row number
     if 'No' in df.columns:
-        row = df[df['No'] == current_row_number].iloc[0]
+        row = df[df['No'].astype(str).str.strip() == current_row_number].iloc[0]
         current_idx = current_row_number
     else:
-        row = df.iloc[current_row_number]
+        row = df.iloc[int(current_row_number)]
         current_idx = current_row_number
     
     st.title(f"Problem Set #{current_idx} of {len(df)}")
@@ -929,7 +938,7 @@ def annotation_interface():
             
             # Save to database
             if save_annotation(st.session_state.teacher_name, dataset_name, row, annotations):
-                row_number = int(row.get('No', current_idx))
+                row_number = normalize_row_id(row.get('No', current_idx))
                 st.session_state.annotations_submitted.add(row_number)
                 # Remove this row from unannotated list
                 if row_number in st.session_state.unannotated_rows:
