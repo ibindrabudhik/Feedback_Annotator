@@ -48,6 +48,32 @@ def get_all_row_numbers(df):
         return {v for v in ids if v is not None}
     return {str(i) for i in range(len(df))}
 
+
+def get_sorted_row_numbers(df):
+    """Return all row ids sorted numerically when possible."""
+    ids = list(get_all_row_numbers(df))
+
+    def _sort_key(v):
+        try:
+            return (0, int(str(v)))
+        except (TypeError, ValueError):
+            return (1, str(v))
+
+    return sorted(ids, key=_sort_key)
+
+
+def get_row_by_number(df, row_number):
+    """Return dataframe row by normalized row number."""
+    if "No" in df.columns:
+        matched = df[df["No"].astype(str).str.strip() == str(row_number)]
+        if matched.empty:
+            return None
+        return matched.iloc[0]
+    try:
+        return df.iloc[int(row_number)]
+    except (TypeError, ValueError, IndexError):
+        return None
+
 @st.cache_data
 def load_data():
     def ensure_student_raw_columns(df):
@@ -233,6 +259,8 @@ if 'form_reset_counter' not in st.session_state:
     st.session_state.form_reset_counter = 0
 if 'annotation_prefill' not in st.session_state:
     st.session_state.annotation_prefill = {}
+if 'all_row_numbers' not in st.session_state:
+    st.session_state.all_row_numbers = []
 
 def chat_bubble(message, sender="user"):
     """
@@ -663,19 +691,22 @@ def teacher_login():
             
             # Fetch already-annotated questions for this teacher and dataset
             annotated = get_annotated_rows(teacher_name.strip(), dataset_choice)
-            st.session_state.annotations_submitted = annotated
-            
-            # Get list of unannotated rows
+            # Keep only annotations that exist in the currently loaded dataset.
             df = datasets[dataset_choice]
             all_row_numbers = get_all_row_numbers(df)
+            annotated_in_dataset = {rid for rid in annotated if rid in all_row_numbers}
+            st.session_state.annotations_submitted = annotated_in_dataset
             
-            unannotated = sorted(list(all_row_numbers - annotated))
+            # Get list of unannotated rows
+            st.session_state.all_row_numbers = get_sorted_row_numbers(df)
+            
+            unannotated = sorted(list(all_row_numbers - annotated_in_dataset))
             st.session_state.unannotated_rows = unannotated
             
             if len(unannotated) > 0:
                 st.session_state.current_index = unannotated[0]
             else:
-                st.session_state.current_index = 0
+                st.session_state.current_index = st.session_state.all_row_numbers[-1] if st.session_state.all_row_numbers else 0
             
             st.rerun()
         elif submit:
@@ -692,6 +723,18 @@ def annotation_interface():
         all_rows = get_all_row_numbers(df)
         unannotated = sorted(list(all_rows - st.session_state.annotations_submitted))
         st.session_state.unannotated_rows = unannotated
+
+    st.session_state.all_row_numbers = get_sorted_row_numbers(df)
+    if not st.session_state.all_row_numbers:
+        st.warning("Dataset tidak memiliki baris yang bisa dianotasi.")
+        return
+
+    normalized_current = normalize_row_id(st.session_state.current_index)
+    if normalized_current not in st.session_state.all_row_numbers:
+        if st.session_state.unannotated_rows:
+            st.session_state.current_index = st.session_state.unannotated_rows[0]
+        else:
+            st.session_state.current_index = st.session_state.all_row_numbers[0]
     
     # Sidebar
     with st.sidebar:
@@ -717,28 +760,36 @@ def annotation_interface():
             
             # Fetch annotations for new dataset
             annotated = get_annotated_rows(st.session_state.teacher_name, new_dataset)
-            st.session_state.annotations_submitted = annotated
-            
-            # Get list of unannotated rows for new dataset
+            # Keep only annotations that exist in the currently loaded dataset.
             new_df = datasets[new_dataset]
             all_row_numbers = get_all_row_numbers(new_df)
+            annotated_in_dataset = {rid for rid in annotated if rid in all_row_numbers}
+            st.session_state.annotations_submitted = annotated_in_dataset
             
-            unannotated = sorted(list(all_row_numbers - annotated))
+            # Get list of unannotated rows for new dataset
+            st.session_state.all_row_numbers = get_sorted_row_numbers(new_df)
+            
+            unannotated = sorted(list(all_row_numbers - annotated_in_dataset))
             st.session_state.unannotated_rows = unannotated
             
             if len(unannotated) > 0:
                 st.session_state.current_index = unannotated[0]
+            elif st.session_state.all_row_numbers:
+                st.session_state.current_index = st.session_state.all_row_numbers[-1]
             
             st.rerun()
         
         st.markdown("---")
         st.markdown(f"**Dataset saat ini:** {dataset_name}")
-        total_annotated = len(st.session_state.annotations_submitted)
+        all_row_set = set(st.session_state.all_row_numbers)
+        annotated_in_dataset = st.session_state.annotations_submitted.intersection(all_row_set)
+        total_annotated = len(annotated_in_dataset)
         total_questions = len(df)
         remaining = len(st.session_state.unannotated_rows)
         st.markdown(f"**Progress:** {total_annotated}/{total_questions} annotated")
         st.markdown(f"**Tersisa:** {remaining} pertanyaan dan feedback")
-        st.progress(total_annotated / total_questions if total_questions > 0 else 0)
+        progress_value = (total_annotated / total_questions) if total_questions > 0 else 0.0
+        st.progress(min(max(progress_value, 0.0), 1.0))
 
         feedback_col = "Final_Feedback_Type" if "Final_Feedback_Type" in df.columns else None
         if feedback_col:
@@ -768,11 +819,14 @@ def annotation_interface():
     
     # Check if all done
     if len(st.session_state.unannotated_rows) == 0:
-        st.success("🎉 Anda sudah menyelesaikan semua anotasi!")
-        st.balloons()
+        st.success("🎉 Semua data sudah dianotasi. Anda sekarang di mode review.")
         st.markdown(f"### Summary")
         st.markdown(f"- **Total Questions:** {len(df)}")
         st.markdown(f"- **Annotated:** {len(st.session_state.annotations_submitted)}")
+        if st.session_state.all_row_numbers:
+            current_norm = normalize_row_id(st.session_state.current_index)
+            if current_norm not in st.session_state.all_row_numbers:
+                st.session_state.current_index = st.session_state.all_row_numbers[-1]
         if st.button("Logout and Choose Another Dataset"):
             st.session_state.teacher_name = None
             st.session_state.current_index = 0
@@ -782,21 +836,17 @@ def annotation_interface():
             st.session_state.form_reset_counter = 0
             st.session_state.annotation_prefill = {}
             st.rerun()
+    
+    current_row_number = normalize_row_id(st.session_state.current_index)
+    if current_row_number is None:
+        current_row_number = st.session_state.all_row_numbers[0]
+        st.session_state.current_index = current_row_number
+
+    row = get_row_by_number(df, current_row_number)
+    if row is None:
+        st.error("Row tidak ditemukan pada dataset saat ini.")
         return
-    
-    # Get current row from unannotated list
-    if len(st.session_state.unannotated_rows) == 0:
-        return
-    
-    current_row_number = normalize_row_id(st.session_state.unannotated_rows[0])  # Get the first unannotated row number
-    
-    # Find the actual dataframe index for this row number
-    if 'No' in df.columns:
-        row = df[df['No'].astype(str).str.strip() == current_row_number].iloc[0]
-        current_idx = current_row_number
-    else:
-        row = df.iloc[int(current_row_number)]
-        current_idx = current_row_number
+    current_idx = current_row_number
     
     st.title(f"Problem Set #{current_idx} of {len(df)}")
     
@@ -890,17 +940,6 @@ def annotation_interface():
         chat_bubble(student_answer, sender="user")
         chat_bubble(feedback_text, sender="ai")
 
-    nav_col1, nav_col2 = st.columns([1, 3])
-    with nav_col1:
-        back_disabled = len(st.session_state.navigation_history) == 0
-        if st.button("⬅️ Back", use_container_width=True, disabled=back_disabled):
-            previous_row = normalize_row_id(st.session_state.navigation_history.pop())
-            if previous_row:
-                if previous_row in st.session_state.unannotated_rows:
-                    st.session_state.unannotated_rows.remove(previous_row)
-                st.session_state.unannotated_rows.insert(0, previous_row)
-            st.rerun()
-    
     # Annotation Form
     st.markdown("---")
     
@@ -1003,11 +1042,23 @@ def annotation_interface():
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        col_submit, col_skip = st.columns([1, 4])
+        nav_index = st.session_state.all_row_numbers.index(current_row_number)
+        back_disabled = nav_index <= 0
+
+        col_back, col_submit, col_submit_all = st.columns([1, 1, 2])
+        with col_back:
+            back_button = st.form_submit_button("⬅️ Back", use_container_width=True, disabled=back_disabled)
         with col_submit:
             submit_button = st.form_submit_button("✅ Submit & Next", use_container_width=True)
-        
-        if submit_button:
+        with col_submit_all:
+            submit_all_button = st.form_submit_button("📦 Submit All", use_container_width=True)
+
+        if back_button:
+            prev_row = st.session_state.all_row_numbers[nav_index - 1]
+            st.session_state.current_index = prev_row
+            st.rerun()
+
+        if submit_button or submit_all_button:
             annotations = {
                 "relevancy": relevancy,
                 "accuracy": accuracy,
@@ -1018,10 +1069,15 @@ def annotation_interface():
                 "teacher_comments": teacher_comments.strip() if teacher_comments else None
             }
             
-            # Save to database
-            if save_annotation(st.session_state.teacher_name, dataset_name, row, annotations):
-                row_number = normalize_row_id(row.get('No', current_idx))
-                st.session_state.annotation_prefill[f"{dataset_name}::{row_number}"] = {
+            def _save_one(target_row_number):
+                target_row = get_row_by_number(df, target_row_number)
+                if target_row is None:
+                    return False
+                ok = save_annotation(st.session_state.teacher_name, dataset_name, target_row, annotations)
+                if not ok:
+                    return False
+
+                st.session_state.annotation_prefill[f"{dataset_name}::{target_row_number}"] = {
                     "relevancy": relevancy,
                     "accuracy": accuracy,
                     "motivation": motivation,
@@ -1030,16 +1086,45 @@ def annotation_interface():
                     "tone_style": tone_style,
                     "teacher_comments": teacher_comments.strip() if teacher_comments else None,
                 }
-                if row_number and (
-                    not st.session_state.navigation_history
-                    or st.session_state.navigation_history[-1] != row_number
-                ):
-                    st.session_state.navigation_history.append(row_number)
-                st.session_state.annotations_submitted.add(row_number)
-                # Remove this row from unannotated list
-                if row_number in st.session_state.unannotated_rows:
-                    st.session_state.unannotated_rows.remove(row_number)
+                st.session_state.annotations_submitted.add(target_row_number)
+                if target_row_number in st.session_state.unannotated_rows:
+                    st.session_state.unannotated_rows.remove(target_row_number)
+                return True
+
+            if submit_all_button:
+                remaining_rows = [current_row_number] + [
+                    rid for rid in st.session_state.unannotated_rows if rid != current_row_number
+                ]
+                saved_count = 0
+                for rid in remaining_rows:
+                    if _save_one(rid):
+                        saved_count += 1
+                    else:
+                        break
+
                 st.session_state.form_reset_counter += 1
+                if saved_count == len(remaining_rows):
+                    if st.session_state.all_row_numbers:
+                        st.session_state.current_index = st.session_state.all_row_numbers[-1]
+                    st.success(f"✅ Submit All berhasil: {saved_count} data disimpan.")
+                else:
+                    st.warning(f"⚠️ Submit All berhenti setelah {saved_count} data.")
+                st.rerun()
+
+            if submit_button and _save_one(current_row_number):
+                st.session_state.form_reset_counter += 1
+
+                if st.session_state.unannotated_rows:
+                    following = st.session_state.all_row_numbers[nav_index + 1:]
+                    next_row = st.session_state.unannotated_rows[0]
+                    for candidate in following:
+                        if candidate in st.session_state.unannotated_rows:
+                            next_row = candidate
+                            break
+                    st.session_state.current_index = next_row
+                else:
+                    st.session_state.current_index = current_row_number
+
                 st.success("✅ Anotasi berhasil disimpan!")
                 st.rerun()
 
