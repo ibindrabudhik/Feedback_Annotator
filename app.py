@@ -714,7 +714,7 @@ def annotation_interface():
             st.markdown("### 🧾 Distribusi Feedback")
             if dataset_name == "Student Raw":
                 st.caption("Balanced sample: maksimum 10 data per tipe feedback.")
-            st.dataframe(counts_df, use_container_width=True, hide_index=True)
+            st.dataframe(counts_df, width="stretch", hide_index=True)
         
         st.markdown("---")
         if st.button("🚪 Logout"):
@@ -786,10 +786,13 @@ def annotation_interface():
     with col1:
         # Student Profile & Problem Details
         st.markdown("### 📋 Student Profile & Problem Details")
+        problem_number_display = row.get('No')
+        if pd.isna(problem_number_display):
+            problem_number_display = current_idx
         
         st.markdown(f"""
         <div style="background-color: #f0f0f0; padding: 15px; border-radius: 10px; margin-bottom: 15px; color: black;">
-            <strong>Problem Number:</strong> {row.get('No', current_idx + 1)}<br>
+            <strong>Problem Number:</strong> {problem_number_display}<br>
             <strong>Knowledge Level (SPK):</strong> {row.get('SPK', 'N/A')}<br>
             <strong>Mistake Level (SAL):</strong> {row.get('SAL', 'N/A')}<br>
             <strong>Feedback Type:</strong> {row.get('Final_Feedback_Type', 'N/A')}<br>
