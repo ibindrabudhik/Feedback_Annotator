@@ -3,6 +3,7 @@ import pandas as pd
 import ast
 import re
 import html
+import math
 from html.parser import HTMLParser
 from datetime import datetime
 import os
@@ -35,9 +36,25 @@ DATASET_HELP = (
 
 def normalize_row_id(value):
     """Normalize row identifiers for consistent set/list operations."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    if value is None or pd.isna(value):
         return None
+
+    # Keep integer-like identifiers canonical across sources: 1, 1.0, "1.0" -> "1"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        if math.isfinite(value) and value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+
     text = str(value).strip()
+    try:
+        numeric = float(text)
+        if math.isfinite(numeric) and numeric.is_integer():
+            return str(int(numeric))
+    except (TypeError, ValueError):
+        pass
+
     return text if text else None
 
 
@@ -51,11 +68,12 @@ def get_all_row_numbers(df):
 
 def get_sorted_row_numbers(df):
     """Return all row ids sorted numerically when possible."""
-    ids = list(get_all_row_numbers(df))
+    ids = [normalize_row_id(v) for v in get_all_row_numbers(df)]
+    ids = [v for v in ids if v is not None]
 
     def _sort_key(v):
         try:
-            return (0, int(str(v)))
+            return (0, int(v))
         except (TypeError, ValueError):
             return (1, str(v))
 
@@ -64,15 +82,28 @@ def get_sorted_row_numbers(df):
 
 def get_row_by_number(df, row_number):
     """Return dataframe row by normalized row number."""
+    target = normalize_row_id(row_number)
+    if target is None:
+        return None
+
     if "No" in df.columns:
-        matched = df[df["No"].astype(str).str.strip() == str(row_number)]
+        normalized_no = df["No"].map(normalize_row_id)
+        matched = df[normalized_no == target]
         if matched.empty:
             return None
         return matched.iloc[0]
     try:
-        return df.iloc[int(row_number)]
+        return df.iloc[int(target)]
     except (TypeError, ValueError, IndexError):
         return None
+
+
+def get_navigation_order(all_rows_sorted, annotated_rows):
+    """Return navigation order that prioritizes already-annotated rows first."""
+    annotated_set = set(annotated_rows)
+    annotated_first = [rid for rid in all_rows_sorted if rid in annotated_set]
+    unannotated_after = [rid for rid in all_rows_sorted if rid not in annotated_set]
+    return annotated_first + unannotated_after
 
 @st.cache_data
 def load_data():
@@ -261,6 +292,8 @@ if 'annotation_prefill' not in st.session_state:
     st.session_state.annotation_prefill = {}
 if 'all_row_numbers' not in st.session_state:
     st.session_state.all_row_numbers = []
+if 'row_navigation_order' not in st.session_state:
+    st.session_state.row_navigation_order = []
 
 def chat_bubble(message, sender="user"):
     """
@@ -699,14 +732,19 @@ def teacher_login():
             
             # Get list of unannotated rows
             st.session_state.all_row_numbers = get_sorted_row_numbers(df)
+            st.session_state.row_navigation_order = get_navigation_order(
+                st.session_state.all_row_numbers,
+                annotated_in_dataset,
+            )
             
-            unannotated = sorted(list(all_row_numbers - annotated_in_dataset))
+            unannotated = [rid for rid in st.session_state.all_row_numbers if rid not in annotated_in_dataset]
             st.session_state.unannotated_rows = unannotated
             
-            if len(unannotated) > 0:
-                st.session_state.current_index = unannotated[0]
-            else:
-                st.session_state.current_index = st.session_state.all_row_numbers[-1] if st.session_state.all_row_numbers else 0
+            st.session_state.current_index = (
+                st.session_state.row_navigation_order[0]
+                if st.session_state.row_navigation_order
+                else 0
+            )
             
             st.rerun()
         elif submit:
@@ -721,7 +759,8 @@ def annotation_interface():
     # Get unannotated rows
     if not st.session_state.unannotated_rows:
         all_rows = get_all_row_numbers(df)
-        unannotated = sorted(list(all_rows - st.session_state.annotations_submitted))
+        all_sorted = get_sorted_row_numbers(df)
+        unannotated = [rid for rid in all_sorted if rid not in st.session_state.annotations_submitted]
         st.session_state.unannotated_rows = unannotated
 
     st.session_state.all_row_numbers = get_sorted_row_numbers(df)
@@ -729,12 +768,17 @@ def annotation_interface():
         st.warning("Dataset tidak memiliki baris yang bisa dianotasi.")
         return
 
+    st.session_state.row_navigation_order = get_navigation_order(
+        st.session_state.all_row_numbers,
+        st.session_state.annotations_submitted,
+    )
+    if not st.session_state.row_navigation_order:
+        st.warning("Navigasi data tidak tersedia.")
+        return
+
     normalized_current = normalize_row_id(st.session_state.current_index)
-    if normalized_current not in st.session_state.all_row_numbers:
-        if st.session_state.unannotated_rows:
-            st.session_state.current_index = st.session_state.unannotated_rows[0]
-        else:
-            st.session_state.current_index = st.session_state.all_row_numbers[0]
+    if normalized_current not in st.session_state.row_navigation_order:
+        st.session_state.current_index = st.session_state.row_navigation_order[0]
     
     # Sidebar
     with st.sidebar:
@@ -768,14 +812,19 @@ def annotation_interface():
             
             # Get list of unannotated rows for new dataset
             st.session_state.all_row_numbers = get_sorted_row_numbers(new_df)
+            st.session_state.row_navigation_order = get_navigation_order(
+                st.session_state.all_row_numbers,
+                annotated_in_dataset,
+            )
             
-            unannotated = sorted(list(all_row_numbers - annotated_in_dataset))
+            unannotated = [rid for rid in st.session_state.all_row_numbers if rid not in annotated_in_dataset]
             st.session_state.unannotated_rows = unannotated
             
-            if len(unannotated) > 0:
-                st.session_state.current_index = unannotated[0]
-            elif st.session_state.all_row_numbers:
-                st.session_state.current_index = st.session_state.all_row_numbers[-1]
+            st.session_state.current_index = (
+                st.session_state.row_navigation_order[0]
+                if st.session_state.row_navigation_order
+                else 0
+            )
             
             st.rerun()
         
@@ -815,6 +864,7 @@ def annotation_interface():
             st.session_state.navigation_history = []
             st.session_state.form_reset_counter = 0
             st.session_state.annotation_prefill = {}
+            st.session_state.row_navigation_order = []
             st.rerun()
     
     # Check if all done
@@ -825,8 +875,8 @@ def annotation_interface():
         st.markdown(f"- **Annotated:** {len(st.session_state.annotations_submitted)}")
         if st.session_state.all_row_numbers:
             current_norm = normalize_row_id(st.session_state.current_index)
-            if current_norm not in st.session_state.all_row_numbers:
-                st.session_state.current_index = st.session_state.all_row_numbers[-1]
+            if current_norm not in st.session_state.row_navigation_order:
+                st.session_state.current_index = st.session_state.row_navigation_order[0]
         if st.button("Logout and Choose Another Dataset"):
             st.session_state.teacher_name = None
             st.session_state.current_index = 0
@@ -835,11 +885,12 @@ def annotation_interface():
             st.session_state.navigation_history = []
             st.session_state.form_reset_counter = 0
             st.session_state.annotation_prefill = {}
+            st.session_state.row_navigation_order = []
             st.rerun()
     
     current_row_number = normalize_row_id(st.session_state.current_index)
     if current_row_number is None:
-        current_row_number = st.session_state.all_row_numbers[0]
+        current_row_number = st.session_state.row_navigation_order[0]
         st.session_state.current_index = current_row_number
 
     row = get_row_by_number(df, current_row_number)
@@ -1042,7 +1093,7 @@ def annotation_interface():
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        nav_index = st.session_state.all_row_numbers.index(current_row_number)
+        nav_index = st.session_state.row_navigation_order.index(current_row_number)
         back_disabled = nav_index <= 0
 
         col_back, col_submit, col_submit_all = st.columns([1, 1, 2])
@@ -1054,7 +1105,7 @@ def annotation_interface():
             submit_all_button = st.form_submit_button("📦 Submit All", use_container_width=True)
 
         if back_button:
-            prev_row = st.session_state.all_row_numbers[nav_index - 1]
+            prev_row = st.session_state.row_navigation_order[nav_index - 1]
             st.session_state.current_index = prev_row
             st.rerun()
 
@@ -1104,8 +1155,8 @@ def annotation_interface():
 
                 st.session_state.form_reset_counter += 1
                 if saved_count == len(remaining_rows):
-                    if st.session_state.all_row_numbers:
-                        st.session_state.current_index = st.session_state.all_row_numbers[-1]
+                    if st.session_state.row_navigation_order:
+                        st.session_state.current_index = st.session_state.row_navigation_order[-1]
                     st.success(f"✅ Submit All berhasil: {saved_count} data disimpan.")
                 else:
                     st.warning(f"⚠️ Submit All berhenti setelah {saved_count} data.")
@@ -1115,12 +1166,8 @@ def annotation_interface():
                 st.session_state.form_reset_counter += 1
 
                 if st.session_state.unannotated_rows:
-                    following = st.session_state.all_row_numbers[nav_index + 1:]
-                    next_row = st.session_state.unannotated_rows[0]
-                    for candidate in following:
-                        if candidate in st.session_state.unannotated_rows:
-                            next_row = candidate
-                            break
+                    following = st.session_state.row_navigation_order[nav_index + 1:]
+                    next_row = following[0] if following else current_row_number
                     st.session_state.current_index = next_row
                 else:
                     st.session_state.current_index = current_row_number
