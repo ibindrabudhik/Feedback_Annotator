@@ -1,6 +1,9 @@
 import streamlit as st
 import pandas as pd
 import ast
+import re
+import html
+from html.parser import HTMLParser
 from datetime import datetime
 import os
 from dotenv import load_dotenv
@@ -23,8 +26,107 @@ def init_supabase():
 
 supabase: Client = init_supabase()
 
+DATASET_OPTIONS = ["RAG4O", "RAG5N", "4O", "5N", "Student Raw"]
+DATASET_HELP = (
+    "RAG4O: RAG + GPT-4o | RAG5N: RAG + GPT-o1 | 4O: GPT-4o | "
+    "5N: GPT-o1 | Student Raw: raw/student_logs + raw/tasks"
+)
+
+
+def get_all_row_numbers(df):
+    """Return row identifiers used for progress/annotation tracking."""
+    if "No" in df.columns:
+        return set(df["No"].values)
+    return set(range(len(df)))
+
 @st.cache_data
 def load_data():
+    def ensure_student_raw_columns(df):
+        """Ensure Student Raw editable CSV has required columns in the expected order."""
+        required_cols = [
+            "No",
+            "Soal",
+            "Jawaban",
+            "Jawaban_Salah",
+            "SPK",
+            "SAL",
+            "Final_Feedback_Type",
+            "Generated_Feedback",
+            "dict_generated_feedback",
+        ]
+
+        normalized = df.copy()
+        for col in required_cols:
+            if col not in normalized.columns:
+                normalized[col] = pd.NA
+
+        return normalized[required_cols]
+
+    def build_student_raw_dataset(raw_dir="raw"):
+        """Build an annotation-ready dataset from raw student interaction logs."""
+        editable_path = os.path.join(raw_dir, "student_raw_editable.csv")
+
+        # If editable CSV already exists, use it as the source of truth.
+        if os.path.exists(editable_path):
+            editable_df = pd.read_csv(editable_path)
+            editable_df = ensure_student_raw_columns(editable_df)
+            editable_df["SPK"] = editable_df["SPK"].fillna("N/A")
+            editable_df["SAL"] = editable_df["SAL"].fillna("N/A")
+            return editable_df
+
+        logs_path = os.path.join(raw_dir, "student_logs_rows (2).csv")
+        tasks_path = os.path.join(raw_dir, "tasks_rows.csv")
+
+        logs_df = pd.read_csv(logs_path)
+        tasks_df = pd.read_csv(tasks_path)
+
+        merged_df = logs_df.merge(
+            tasks_df[["task_id", "solution"]],
+            on="task_id",
+            how="left"
+        )
+
+        raw_df = pd.DataFrame({
+            "No": range(1, len(merged_df) + 1),
+            "Soal": merged_df["question"],
+            "Jawaban": merged_df["solution"],
+            "Jawaban_Salah": merged_df["student_answer"],
+            "SPK": merged_df["achievement_level_assessed"].replace("", pd.NA).fillna(merged_df["task_level"]),
+            "SAL": merged_df["error_count"],
+            "Final_Feedback_Type": merged_df["feedback_type"],
+            "Generated_Feedback": merged_df["feedback_given"],
+            "dict_generated_feedback": pd.NA,
+        })
+
+        raw_df = ensure_student_raw_columns(raw_df)
+        raw_df["SPK"] = raw_df["SPK"].fillna("N/A")
+        raw_df["SAL"] = raw_df["SAL"].fillna("N/A")
+
+        # Export first-time editable CSV so users can modify Student Raw directly.
+        raw_df.to_csv(editable_path, index=False)
+        return raw_df
+
+    def sample_per_feedback_type(df, n_per_type=10):
+        """Return a balanced subset with up to n_per_type rows for each feedback type."""
+        feedback_col_candidates = [
+            "Final_Feedback_Type",
+            "feedback_type",
+            "Feedback_Type",
+            "jenis_feedback",
+        ]
+
+        feedback_col = next((c for c in feedback_col_candidates if c in df.columns), None)
+        if feedback_col is None:
+            return df
+
+        # Keep order deterministic for reproducible annotation sessions.
+        sampled = (
+            df.groupby(feedback_col, group_keys=False)
+            .apply(lambda g: g.sample(n=min(len(g), n_per_type), random_state=42))
+            .reset_index(drop=True)
+        )
+        return sampled
+
     # Dataset file paths - update these when you have the actual files
     datasets = {
         "RAG4O": "combined_data_generated_feedback_rag_gpt4o.csv",  # RAG WITH GPT4O
@@ -36,10 +138,11 @@ def load_data():
     loaded_datasets = {}
     for name, path in datasets.items():
         try:
-            loaded_datasets[name] = pd.read_csv(path)
+            df = pd.read_csv(path)
+            loaded_datasets[name] = sample_per_feedback_type(df, n_per_type=10)
         except FileNotFoundError:
             # Create dummy dataframe for testing if file doesn't exist
-            loaded_datasets[name] = pd.DataFrame({
+            df = pd.DataFrame({
                 'No': [1, 2, 3],
                 'Soal': [f'Sample problem {i} for {name}' for i in range(1, 4)],
                 'Jawaban': ['17', '25', '30'],
@@ -50,6 +153,26 @@ def load_data():
                 'Generated_Feedback': [f'Sample feedback {i}' for i in range(1, 4)],
                 'dict_generated_feedback': ["{'Feedback': 'Sample feedback text'}" for _ in range(3)]
             })
+            loaded_datasets[name] = sample_per_feedback_type(df, n_per_type=10)
+
+    try:
+        student_raw_df = build_student_raw_dataset(raw_dir="raw")
+        loaded_datasets["Student Raw"] = sample_per_feedback_type(student_raw_df, n_per_type=10)
+    except FileNotFoundError:
+        student_raw_df = pd.DataFrame({
+            'No': [1, 2, 3],
+            'Soal': [f'Sample raw problem {i}' for i in range(1, 4)],
+            'Jawaban': ['17', '25', '30'],
+            'Jawaban_Salah': ['15', '20', '28'],
+            'SPK': ['High', 'Medium', 'Low'],
+            'SAL': ['1', '2', '3'], 
+            'Final_Feedback_Type': ['Correct Response', 'Response Contingent', 'Topic Contingent'],
+            'Generated_Feedback': [f'Sample raw feedback {i}' for i in range(1, 4)],
+            'dict_generated_feedback': [pd.NA for _ in range(3)]
+        })
+        loaded_datasets["Student Raw"] = sample_per_feedback_type(student_raw_df, n_per_type=10)
+    except Exception as e:
+        st.warning(f"Could not load Student Raw dataset: {str(e)}")
     
     return loaded_datasets
 
@@ -123,6 +246,327 @@ def chat_bubble(message, sender="user"):
             unsafe_allow_html=True
         )
 
+
+def normalize_tutor_message(text, aggressive=True):
+    """Normalize malformed tutor text so markdown/math renders more reliably."""
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return ""
+
+    cleaned = str(text)
+    cleaned = html.unescape(cleaned)
+
+    # Parse noisy KaTeX/HTML payloads and keep only text + TeX annotations.
+    if "<" in cleaned and ">" in cleaned:
+        class _MathHTMLCleaner(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.parts = []
+                self.skip_katex_html_depth = 0
+                self.in_tex_annotation = False
+                self.math_depth = 0
+
+            def handle_starttag(self, tag, attrs):
+                if self.skip_katex_html_depth > 0:
+                    self.skip_katex_html_depth += 1
+                    return
+                attrs_dict = dict(attrs)
+                cls = attrs_dict.get("class", "")
+                if "katex-html" in cls:
+                    self.skip_katex_html_depth = 1
+                    return
+                if tag in {"script", "style"}:
+                    return
+                if tag == "math":
+                    self.math_depth += 1
+                    return
+                if tag == "annotation" and attrs_dict.get("encoding", "") == "application/x-tex":
+                    self.in_tex_annotation = True
+                    return
+                if tag in {"br", "p", "div", "li"}:
+                    self.parts.append("\n")
+
+            def handle_endtag(self, tag):
+                if self.skip_katex_html_depth > 0:
+                    self.skip_katex_html_depth -= 1
+                    return
+                if self.in_tex_annotation and tag == "annotation":
+                    self.in_tex_annotation = False
+                    self.parts.append(" ")
+                    return
+                if tag == "math" and self.math_depth > 0:
+                    self.math_depth -= 1
+                    return
+                if tag in {"p", "div", "li"}:
+                    self.parts.append("\n")
+
+            def handle_data(self, data):
+                if self.skip_katex_html_depth > 0:
+                    return
+                if self.math_depth > 0 and not self.in_tex_annotation:
+                    return
+                if data.strip():
+                    self.parts.append(data)
+
+        parser = _MathHTMLCleaner()
+        parser.feed(cleaned)
+        cleaned = " ".join(parser.parts)
+
+    # Strip invisible unicode separators that often break math rendering.
+    cleaned = re.sub(r"[\u200B-\u200F\u202A-\u202E\u2060\uFEFF]", "", cleaned)
+
+    # Recover common escaped-sequence corruption from raw text exports.
+    cleaned = cleaned.replace("\x0c", "f")  # form-feed often comes from broken \f in \frac
+    cleaned = re.sub(r"\t(?=imes\b)", "t", cleaned)  # tab often comes from broken \t in \times
+
+    # Extract TeX from MathML annotation blocks and remove any remaining tags.
+    cleaned = re.sub(
+        r'(?is)<annotation[^>]*encoding=["\']application/x-tex["\'][^>]*>(.*?)</annotation>',
+        lambda m: f" {m.group(1)} ",
+        cleaned,
+    )
+    cleaned = re.sub(r"(?is)<[^>]+>", " ", cleaned)
+
+    # Reduce over-escaped latex commands: \\frac -> \frac
+    cleaned = re.sub(r"\\\\(?=[A-Za-z])", r"\\", cleaned)
+    cleaned = re.sub(r"\\{2,}(?=(?:frac|times|div|ldots)\b)", r"\\", cleaned)
+    # Fix whitespace after backslash: "\ frac" -> "\frac".
+    cleaned = re.sub(r"\\\s+(?=(?:frac|times|div|ldots)\b)", r"\\", cleaned, flags=re.IGNORECASE)
+
+    # Normalize escaped newlines and excessive blank spacing from CSV exports.
+    cleaned = cleaned.replace("\\r\\n", "\n").replace("\\n", "\n")
+    cleaned = cleaned.replace("\r\n", "\n")
+    cleaned = cleaned.replace(r"\$", "$")
+
+    # Repair truncated latex command fragments that lost leading letters.
+    cleaned = re.sub(r"(?<![A-Za-z])imes\b", "times", cleaned)
+    cleaned = re.sub(r"(?<![A-Za-z])rac(?=\s*\{|\s*\d)", "frac", cleaned)
+
+    # Repair broken latex operators with spaces/newlines between letters.
+    cleaned = re.sub(r"\\\s*t\s*i\s*m\s*e\s*s", r"\\times", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\\\s*d\s*i\s*v", r"\\div", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\\\s*f\s*r\s*a\s*c", r"\\frac", cleaned, flags=re.IGNORECASE)
+
+    # Remove markdown heading markers first.
+    cleaned = cleaned.replace("**", "")
+
+    if aggressive:
+        # Fix "vertical" broken commands (letters split line-by-line).
+        def _join_vertical_letters(word):
+            pattern = r"(?is)" + r"\s*\n\s*".join(list(word))
+            return re.sub(pattern, word, cleaned)
+
+        for token in ["frac", "times", "div", "ldots"]:
+            cleaned = _join_vertical_letters(token)
+
+        # Join multi-line isolated numbers: "7\n9" -> "79".
+        cleaned = re.sub(
+            r"(?m)(?<!\d)(\d(?:\s*\n\s*\d)+)(?!\d)",
+            lambda m: re.sub(r"\s*\n\s*", "", m.group(1)),
+            cleaned,
+        )
+
+        # Normalize spaced math commands after vertical joins.
+        cleaned = re.sub(r"(?i)f\s*r\s*a\s*c", "frac", cleaned)
+        cleaned = re.sub(r"(?i)t\s*i\s*m\s*e\s*s", "times", cleaned)
+        cleaned = re.sub(r"(?i)d\s*i\s*v", "div", cleaned)
+        cleaned = re.sub(r"(?i)l\s*d\s*o\s*t\s*s", "ldots", cleaned)
+
+        # Merge fragmented one-character lines: f\nr\na\nc -> frac, 7\n9 -> 79.
+        raw_lines = [ln.strip() for ln in cleaned.split("\n")]
+        merged_lines = []
+        i = 0
+        while i < len(raw_lines):
+            current = raw_lines[i]
+            if len(current) == 1 and current.isalnum():
+                chars = []
+                while i < len(raw_lines):
+                    candidate = raw_lines[i]
+                    if len(candidate) == 1 and candidate.isalnum():
+                        chars.append(candidate)
+                        i += 1
+                    else:
+                        break
+                merged_lines.append("".join(chars))
+                continue
+            merged_lines.append(current)
+            i += 1
+
+        # Drop immediate duplicate lines often produced by corrupted exports.
+        lines = merged_lines
+        deduped_lines = []
+        prev = None
+        for line in lines:
+            if line and prev and line.lower() == prev.lower():
+                continue
+            deduped_lines.append(line)
+            prev = line if line else prev
+        cleaned = "\n".join(deduped_lines)
+
+        # Flatten single newlines to avoid vertical math fragments while keeping paragraphs.
+        cleaned = re.sub(r"(?<!\n)\n(?!\n)", " ", cleaned)
+
+    # Convert shorthand fraction tokens like frac79 -> \frac{7}{9}.
+    cleaned = re.sub(r"(?<!\\)frac\s*([0-9])\s*([0-9])", r"\\frac{\1}{\2}", cleaned)
+    cleaned = re.sub(r"([0-9])\s*frac\s*([0-9])\s*([0-9])", r"\1 \\frac{\2}{\3}", cleaned)
+    cleaned = re.sub(r"(\d+)\s*frac\s*\{\s*(\d+)\s*\}\s*\{\s*(\d+)\s*\}", r"\1\\frac{\2}{\3}", cleaned)
+
+    if aggressive:
+        # Handle missing braces pattern: frac1times2+12 -> frac{1 times 2 + 1}{2}.
+        cleaned = re.sub(
+            r"(?<!\\)frac\s*([^\s]+?)\s*\+\s*(\d{1,2})",
+            lambda m: f"frac{{{m.group(1)} + {m.group(2)[0]}}}{{{m.group(2)[1]}}}" if len(m.group(2)) == 2 else m.group(0),
+            cleaned,
+        )
+
+    # Ensure common operators are valid LaTeX commands.
+    cleaned = cleaned.replace("×", r"\times")
+    cleaned = cleaned.replace("÷", r"\div")
+    cleaned = re.sub(r"(?<!\\)\btimes\b", r"\\times", cleaned)
+    cleaned = re.sub(r"(?<!\\)\bdiv\b", r"\\div", cleaned)
+    cleaned = re.sub(r"(?<!\\)\bldots\b", r"\\ldots", cleaned)
+
+    # Final latex normalization: repair malformed delimiters and slash fractions.
+    cleaned = cleaned.replace(r"\/", r"\div")
+    cleaned = cleaned.replace(r"\(", "$").replace(r"\)", "$")
+
+    # Join split display-math expressions: $$A$$ \div $$B$$ -> $$A \div B$$.
+    cleaned = re.sub(
+        r"\$\$\s*(.*?)\s*\$\$\s*\\div\s*\$\$\s*(.*?)\s*\$\$",
+        r"$$\1 \\div \2$$",
+        cleaned,
+        flags=re.DOTALL,
+    )
+
+    # Convert plain slash fractions to latex fractions.
+    cleaned = re.sub(r"\(\s*([0-9]+)\s*/\s*([0-9]+)\s*\)", r"\\frac{\1}{\2}", cleaned)
+    cleaned = re.sub(r"(?<![\\\d])([0-9]+)\s*/\s*([0-9]+)", r"\\frac{\1}{\2}", cleaned)
+
+    # Fix mixed number pattern like 1(1/2) or 1\frac{1}{2}.
+    cleaned = re.sub(r"(\d+)\s*\(?\s*\\frac\{(\d+)\}\{(\d+)\}\s*\)?", r"\1\\frac{\2}{\3}", cleaned)
+    cleaned = re.sub(r"(\d+)\s*\(?\s*([0-9]+)\s*/\s*([0-9]+)\s*\)?", r"\1\\frac{\2}{\3}", cleaned)
+
+    # Ensure remaining bare 'frac' tokens become proper latex command.
+    cleaned = re.sub(r"(?<!\\)\bfrac\b", r"\\frac", cleaned)
+
+    # Collapse too many spaces/newlines while preserving paragraph breaks.
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
+    return cleaned.strip()
+
+
+def format_math_for_display(text, mode="latex"):
+    """Format math for display.
+
+    mode='latex': keep/promote latex rendering when possible.
+    mode='plain': keep sentence readability and convert latex tokens to plain symbols.
+    """
+    if not text:
+        return ""
+
+    formatted = str(text)
+    # Normalize common latex variants from CSV/HTML exports.
+    formatted = re.sub(r"\\{2,}(?=(?:frac|times|div|ldots)\b)", r"\\", formatted)
+    formatted = re.sub(r"\\\s+(?=(?:frac|times|div|ldots)\b)", r"\\", formatted, flags=re.IGNORECASE)
+    formatted = formatted.replace(r"\$", "$")
+    formatted = formatted.replace("×", r"\times").replace("÷", r"\div")
+    formatted = formatted.replace(r"\[", "$$").replace(r"\]", "$$")
+    formatted = formatted.replace(r"\(", "$").replace(r"\)", "$")
+
+    if mode == "plain":
+        # Keep prose readable, but render fractions as inline math.
+        formatted = re.sub(r"\\\s*times", "×", formatted)
+        formatted = re.sub(r"\\\s*div", "÷", formatted)
+        formatted = re.sub(r"\\+times", "×", formatted)
+        formatted = re.sub(r"\\+div", "÷", formatted)
+        formatted = re.sub(r"\\+ldots", "...", formatted)
+
+        # Mixed number latex, e.g. 1\frac{1}{7} -> $1\frac{1}{7}$
+        formatted = re.sub(
+            r"(\d+)\s*\\frac\{\s*(\d+)\s*\}\{\s*(\d+)\s*\}",
+            r"$\1\\frac{\2}{\3}$",
+            formatted,
+        )
+
+        # Standalone latex fraction, e.g. \frac{4}{9} -> $\frac{4}{9}$
+        formatted = re.sub(
+            r"(?<!\$)\\frac\{\s*([^{}]+?)\s*\}\{\s*([^{}]+?)\s*\}(?!\$)",
+            r"$\\frac{\1}{\2}$",
+            formatted,
+        )
+
+        # Fallback text fractions: (4/9) or 4/9 -> $\frac{4}{9}$
+        formatted = re.sub(r"\(\s*(\d+)\s*/\s*(\d+)\s*\)", r"$\\frac{\1}{\2}$", formatted)
+        formatted = re.sub(r"(?<![\d$])(\d+)\s*/\s*(\d+)(?![\d$])", r"$\\frac{\1}{\2}$", formatted)
+
+        # Fallback mixed text fraction: 1 1/7 -> $1\frac{1}{7}$
+        formatted = re.sub(r"(\d+)\s+(\d+)\s*/\s*(\d+)", r"$\1\\frac{\2}{\3}$", formatted)
+
+        formatted = re.sub(r"[ \t]{2,}", " ", formatted)
+        return formatted.strip()
+
+    # If text contains bare latex commands but no math delimiters, promote expression to display math.
+    if "$" not in formatted and re.search(r"\\(frac|times|div|ldots)\b", formatted):
+        # If prose and latex commands are mixed (common after HTML <p> extraction),
+        # wrap math fragments inline instead of forcing the whole sentence into $$...$$.
+        if re.search(r"[A-Za-z]", formatted):
+            # Normalize spacing around operators so wrapping is reliable.
+            formatted = re.sub(r"\s*\\times\s*", r" \\times ", formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r"\s*\\div\s*", r" \\div ", formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r"\s*\\ldots\s*", r" \\ldots ", formatted, flags=re.IGNORECASE)
+
+            # Wrap mixed numbers first: 4\frac{1}{2} -> $4\frac{1}{2}$
+            formatted = re.sub(
+                r"(?<!\$)(\d+)\s*\\frac\{\s*([^{}]+?)\s*\}\{\s*([^{}]+?)\s*\}(?!\$)",
+                r"$\1\\frac{\2}{\3}$",
+                formatted,
+            )
+
+            # Wrap fractions in inline math first
+            formatted = re.sub(
+                r"(?<!\$)\\frac\{\s*([^{}]+?)\s*\}\{\s*([^{}]+?)\s*\}(?!\$)",
+                r"$\\frac{\1}{\2}$",
+                formatted,
+            )
+            
+            # Wrap operators: match with flexible spacing (before/after or in groups)
+            # Pattern 1: \times with spaces before and/or after
+            formatted = re.sub(r"(?<!\$)\s*\\times\s*(?!\$)", r" $\\times$ ", formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r"(?<!\$)\s*\\div\s*(?!\$)", r" $\\div$ ", formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r"(?<!\$)\s*\\ldots\s*(?!\$)", r" $\\ldots$ ", formatted, flags=re.IGNORECASE)
+            
+            # Simplify: ensure every \times, \div, \ldots not in $ is wrapped
+            formatted = re.sub(r"(?<!\$)\\times(?!\$)", r"$\\times$", formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r"(?<!\$)\\div(?!\$)", r"$\\div$", formatted, flags=re.IGNORECASE)
+            formatted = re.sub(r"(?<!\$)\\ldots(?!\$)", r"$\\ldots$", formatted, flags=re.IGNORECASE)
+
+            # Clean up spacing: collapse multiple spaces and fix $ edges
+            formatted = re.sub(r"\$\s+", "$", formatted)
+            formatted = re.sub(r"\s+\$", "$", formatted)
+            formatted = re.sub(r"\$\$+", "$$", formatted)
+            formatted = re.sub(r"[ ]{2,}", " ", formatted)  # Collapse multiple spaces
+            return formatted
+
+        match = re.match(r"^\s*([^\n:]+:)\s*(.+)$", formatted, flags=re.DOTALL)
+        if match:
+            prefix = match.group(1).strip()
+            expr = match.group(2).strip()
+            return f"{prefix}\n\n$${expr}$$"
+        return f"$${formatted.strip()}$$"
+
+    # If proper math delimiters exist, let Streamlit render them directly.
+    if "$" in formatted:
+        return formatted
+
+    # Fallback for bare commands that would otherwise display literally.
+    formatted = re.sub(r"\\+times", "×", formatted)
+    formatted = re.sub(r"\\+div", "÷", formatted)
+    formatted = re.sub(r"\\+ldots", "...", formatted)
+
+    # Convert fractions into readable a/b text form.
+    formatted = re.sub(r"\\frac\{\s*([^{}]+?)\s*\}\{\s*([^{}]+?)\s*\}", r"(\1/\2)", formatted)
+    formatted = re.sub(r"(\d+)\s*\(\s*(\d+)\s*/\s*(\d+)\s*\)", r"\1 \2/\3", formatted)
+    return formatted
+
 def save_annotation(teacher_name, dataset_name, row_data, annotations):
     """Save annotation to Supabase"""
     try:
@@ -172,8 +616,8 @@ def teacher_login():
     with st.form("teacher_login_form"):
         teacher_name = st.text_input("Nama:", placeholder="e.g., Dr. Smith")
         dataset_choice = st.radio("Pilih Dataset:", 
-                                  ["RAG4O", "RAG5N", "4O", "5N"],
-                                  help="RAG4O: RAG + GPT-4o | RAG5N: RAG + GPT-o1 | 4O: GPT-4o | 5N: GPT-o1")
+                                  DATASET_OPTIONS,
+                                  help=DATASET_HELP)
         submit = st.form_submit_button("Mulai Anotasi")
         
         if submit and teacher_name:
@@ -187,11 +631,7 @@ def teacher_login():
             
             # Get list of unannotated rows
             df = datasets[dataset_choice]
-            # Use 'No' column if available, otherwise use index
-            if 'No' in df.columns:
-                all_row_numbers = set(df['No'].values)
-            else:
-                all_row_numbers = set(range(len(df)))
+            all_row_numbers = get_all_row_numbers(df)
             
             unannotated = sorted(list(all_row_numbers - annotated))
             st.session_state.unannotated_rows = unannotated
@@ -213,7 +653,7 @@ def annotation_interface():
     
     # Get unannotated rows
     if not st.session_state.unannotated_rows:
-        all_rows = set(range(len(df)))
+        all_rows = get_all_row_numbers(df)
         unannotated = sorted(list(all_rows - st.session_state.annotations_submitted))
         st.session_state.unannotated_rows = unannotated
     
@@ -227,9 +667,9 @@ def annotation_interface():
         # Dataset selector
         new_dataset = st.selectbox(
             "Pilih Dataset:",
-            ["RAG4O", "RAG5N", "4O", "5N"],
-            index=["RAG4O", "RAG5N", "4O", "5N"].index(st.session_state.selected_dataset),
-            help="RAG4O: RAG + GPT-4o | RAG5N: RAG + GPT-o1 | 4O: GPT-4o | 5N: GPT-o1"
+            DATASET_OPTIONS,
+            index=DATASET_OPTIONS.index(st.session_state.selected_dataset),
+            help=DATASET_HELP
         )
         
         # Check if dataset changed
@@ -242,10 +682,7 @@ def annotation_interface():
             
             # Get list of unannotated rows for new dataset
             new_df = datasets[new_dataset]
-            if 'No' in new_df.columns:
-                all_row_numbers = set(new_df['No'].values)
-            else:
-                all_row_numbers = set(range(len(new_df)))
+            all_row_numbers = get_all_row_numbers(new_df)
             
             unannotated = sorted(list(all_row_numbers - annotated))
             st.session_state.unannotated_rows = unannotated
@@ -263,6 +700,21 @@ def annotation_interface():
         st.markdown(f"**Progress:** {total_annotated}/{total_questions} annotated")
         st.markdown(f"**Tersisa:** {remaining} pertanyaan dan feedback")
         st.progress(total_annotated / total_questions if total_questions > 0 else 0)
+
+        feedback_col = "Final_Feedback_Type" if "Final_Feedback_Type" in df.columns else None
+        if feedback_col:
+            counts_df = (
+                df[feedback_col]
+                .fillna("Unknown")
+                .astype(str)
+                .value_counts()
+                .rename_axis("Feedback Type")
+                .reset_index(name="Count")
+            )
+            st.markdown("### 🧾 Distribusi Feedback")
+            if dataset_name == "Student Raw":
+                st.caption("Balanced sample: maksimum 10 data per tipe feedback.")
+            st.dataframe(counts_df, use_container_width=True, hide_index=True)
         
         st.markdown("---")
         if st.button("🚪 Logout"):
@@ -344,23 +796,23 @@ def annotation_interface():
         </div>
         """, unsafe_allow_html=True)
         
-        # Problem Statement
+        # Problem Statement (rendered with native markdown so LaTeX is parsed)
         problem = row.get("Soal_x", row.get("Soal_y", row.get("Soal", "")))
-        st.markdown(f"""
-        <div style="background-color: #fff3cd; padding: 15px; border-radius: 10px; border-left: 5px solid #ffc107; color: black;">
-            <strong>📝 Problem:</strong><br>{problem}
-        </div>
-        """, unsafe_allow_html=True)
+        problem = normalize_tutor_message(problem, aggressive=True)
+        problem = format_math_for_display(problem, mode="latex")
+        with st.container(border=True):
+            st.markdown("**📝 Problem:**")
+            st.markdown(problem)
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Correct Answer
+        # Correct Answer (rendered with native markdown so LaTeX is parsed)
         correct_answer = row.get("Jawaban", row.get("correct_answer", ""))
-        st.markdown(f"""
-        <div style="background-color: #d4edda; padding: 15px; border-radius: 10px; border-left: 5px solid #28a745; color: black;">
-            <strong>✅ Correct Answer:</strong> {correct_answer}
-        </div>
-        """, unsafe_allow_html=True)
+        correct_answer = normalize_tutor_message(correct_answer, aggressive=True)
+        correct_answer = format_math_for_display(correct_answer, mode="latex")
+        with st.container(border=True):
+            st.markdown("**✅ Correct Answer:**")
+            st.markdown(correct_answer)
     
     with col2:
         # Chat-style conversation
@@ -376,6 +828,13 @@ def annotation_interface():
                 feedback_text = str(row.get("Generated_Feedback", ""))
         else:
             feedback_text = str(row.get("Generated_Feedback", ""))
+
+        feedback_text = normalize_tutor_message(feedback_text)
+        has_math_markers = bool(
+            re.search(r"\$|\\\(|\\\)|\\\[|\\\]|\\(frac|times|div|ldots)\b", feedback_text)
+        )
+        feedback_mode = "latex" if has_math_markers else "plain"
+        feedback_text = format_math_for_display(feedback_text, mode=feedback_mode)
         
         student_answer = row.get("Jawaban_Salah", row.get("student_error", ""))
         
