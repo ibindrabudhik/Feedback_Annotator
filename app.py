@@ -138,11 +138,12 @@ def resolve_feedback_type_column(df):
 
 def get_feedback_type_from_row(row):
     """Get feedback type value from a row with tolerant column-name matching."""
+    print(row)
     if row is None:
         return "N/A"
 
     preferred = [
-        "final_feedback_type",
+        "Final_feedback_type",
         "feedback_type",
         "jenis_feedback",
         "feedbacktype",
