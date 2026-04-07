@@ -106,17 +106,75 @@ def get_navigation_order(all_rows_sorted, annotated_rows):
     return annotated_first + unannotated_after
 
 
+def _normalize_col_name(name):
+    """Normalize column names for tolerant matching across datasets."""
+    text = str(name).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text
+
+
+def resolve_feedback_type_column(df):
+    """Resolve feedback-type column even when naming differs by source."""
+    preferred = [
+        "final_feedback_type",
+        "feedback_type",
+        "jenis_feedback",
+        "feedbacktype",
+        "type_feedback",
+    ]
+    normalized_to_actual = {_normalize_col_name(col): col for col in df.columns}
+
+    for key in preferred:
+        if key in normalized_to_actual:
+            return normalized_to_actual[key]
+
+    for norm, actual in normalized_to_actual.items():
+        if "feedback" in norm and "type" in norm:
+            return actual
+
+    return None
+
+
+def get_feedback_type_from_row(row):
+    """Get feedback type value from a row with tolerant column-name matching."""
+    if row is None:
+        return "N/A"
+
+    preferred = [
+        "final_feedback_type",
+        "feedback_type",
+        "jenis_feedback",
+        "feedbacktype",
+        "type_feedback",
+    ]
+    normalized_to_actual = {_normalize_col_name(col): col for col in row.index}
+
+    for key in preferred:
+        actual_col = normalized_to_actual.get(key)
+        if actual_col is None:
+            continue
+        value = row.get(actual_col)
+        if pd.notna(value):
+            text = str(value).strip()
+            if text:
+                return text
+
+    for norm, actual_col in normalized_to_actual.items():
+        if "feedback" in norm and "type" in norm:
+            value = row.get(actual_col)
+            if pd.notna(value):
+                text = str(value).strip()
+                if text:
+                    return text
+
+    return "N/A"
+
+
 def build_feedback_set_label(df, row_id, is_annotated):
     """Build a readable label for row picker in review/edit mode."""
     row = get_row_by_number(df, row_id)
-    feedback_type = "N/A"
-    if row is not None:
-        for col in ["Final_Feedback_Type", "feedback_type", "Feedback_Type", "jenis_feedback"]:
-            if col in row.index and pd.notna(row.get(col)):
-                candidate = str(row.get(col)).strip()
-                if candidate:
-                    feedback_type = candidate
-                    break
+    feedback_type = get_feedback_type_from_row(row)
     status = "Annotated" if is_annotated else "Pending"
     return f"#{row_id} | {feedback_type} | {status}"
 
@@ -879,7 +937,7 @@ def annotation_interface():
             st.session_state.current_index = selected_normalized
             st.rerun()
 
-        feedback_col = "Final_Feedback_Type" if "Final_Feedback_Type" in df.columns else None
+        feedback_col = resolve_feedback_type_column(df)
         if feedback_col:
             counts_df = (
                 df[feedback_col]
@@ -980,7 +1038,7 @@ def annotation_interface():
             <strong>Problem Number:</strong> {problem_number_display}<br>
             <strong>Knowledge Level (SPK):</strong> {row.get('SPK', 'N/A')}<br>
             <strong>Mistake Level (SAL):</strong> {row.get('SAL', 'N/A')}<br>
-            <strong>Feedback Type:</strong> {row.get('Final_Feedback_Type', 'N/A')}<br>
+            <strong>Feedback Type:</strong> {get_feedback_type_from_row(row)}<br>
         </div>
         """, unsafe_allow_html=True)
         
