@@ -111,7 +111,12 @@ def build_feedback_set_label(df, row_id, is_annotated):
     row = get_row_by_number(df, row_id)
     feedback_type = "N/A"
     if row is not None:
-        feedback_type = str(row.get("Final_Feedback_Type", "N/A"))
+        for col in ["Final_Feedback_Type", "feedback_type", "Feedback_Type", "jenis_feedback"]:
+            if col in row.index and pd.notna(row.get(col)):
+                candidate = str(row.get(col)).strip()
+                if candidate:
+                    feedback_type = candidate
+                    break
     status = "Annotated" if is_annotated else "Pending"
     return f"#{row_id} | {feedback_type} | {status}"
 
