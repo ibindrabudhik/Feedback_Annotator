@@ -138,12 +138,11 @@ def resolve_feedback_type_column(df):
 
 def get_feedback_type_from_row(row):
     """Get feedback type value from a row with tolerant column-name matching."""
-    print(row)
     if row is None:
         return "N/A"
 
     preferred = [
-        "Final_feedback_type",
+        "final_feedback_type",
         "feedback_type",
         "jenis_feedback",
         "feedbacktype",
@@ -169,6 +168,20 @@ def get_feedback_type_from_row(row):
                 if text:
                     return text
 
+    # Fallback: feedback type is often embedded as first markdown heading in feedback text.
+    for key in ["generated_feedback", "feedback", "feedback_text"]:
+        actual_col = normalized_to_actual.get(key)
+        if actual_col is None:
+            continue
+        value = row.get(actual_col)
+        if pd.notna(value):
+            text = str(value).strip()
+            match = re.match(r"^\*\*(.+?)\*\*", text)
+            if match:
+                heading = match.group(1).strip()
+                if heading:
+                    return heading
+    print("gaada feedback type for")
     return "N/A"
 
 
