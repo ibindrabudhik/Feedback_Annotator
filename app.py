@@ -105,6 +105,16 @@ def get_navigation_order(all_rows_sorted, annotated_rows):
     unannotated_after = [rid for rid in all_rows_sorted if rid not in annotated_set]
     return annotated_first + unannotated_after
 
+
+def build_feedback_set_label(df, row_id, is_annotated):
+    """Build a readable label for row picker in review/edit mode."""
+    row = get_row_by_number(df, row_id)
+    feedback_type = "N/A"
+    if row is not None:
+        feedback_type = str(row.get("Final_Feedback_Type", "N/A"))
+    status = "Annotated" if is_annotated else "Pending"
+    return f"#{row_id} | {feedback_type} | {status}"
+
 @st.cache_data
 def load_data():
     def ensure_student_raw_columns(df):
@@ -840,6 +850,30 @@ def annotation_interface():
         progress_value = (total_annotated / total_questions) if total_questions > 0 else 0.0
         st.progress(min(max(progress_value, 0.0), 1.0))
 
+        st.markdown("---")
+        st.markdown("### 🛠️ Pilih Feedback untuk Edit")
+        current_row_for_picker = normalize_row_id(st.session_state.current_index)
+        if current_row_for_picker not in st.session_state.row_navigation_order:
+            current_row_for_picker = st.session_state.row_navigation_order[0]
+
+        picker_index = st.session_state.row_navigation_order.index(current_row_for_picker)
+        selected_row = st.selectbox(
+            "Pilih nomor problem/feedback:",
+            st.session_state.row_navigation_order,
+            index=picker_index,
+            format_func=lambda rid: build_feedback_set_label(
+                df,
+                rid,
+                rid in st.session_state.annotations_submitted,
+            ),
+            help="Anda bisa memilih data mana pun untuk dilihat dan diedit ulang, termasuk yang sudah Submit All.",
+        )
+
+        selected_normalized = normalize_row_id(selected_row)
+        if selected_normalized != normalize_row_id(st.session_state.current_index):
+            st.session_state.current_index = selected_normalized
+            st.rerun()
+
         feedback_col = "Final_Feedback_Type" if "Final_Feedback_Type" in df.columns else None
         if feedback_col:
             counts_df = (
@@ -1165,12 +1199,11 @@ def annotation_interface():
             if submit_button and _save_one(current_row_number):
                 st.session_state.form_reset_counter += 1
 
-                if st.session_state.unannotated_rows:
-                    following = st.session_state.row_navigation_order[nav_index + 1:]
-                    next_row = following[0] if following else current_row_number
-                    st.session_state.current_index = next_row
+                following = st.session_state.row_navigation_order[nav_index + 1:]
+                if following:
+                    st.session_state.current_index = following[0]
                 else:
-                    st.session_state.current_index = current_row_number
+                    st.session_state.current_index = st.session_state.row_navigation_order[0]
 
                 st.success("✅ Anotasi berhasil disimpan!")
                 st.rerun()
